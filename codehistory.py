@@ -1,5 +1,6 @@
 #! /usr/bin/python
 
+import os.path
 import argparse
 import subprocess
 import sys
@@ -8,7 +9,9 @@ import re
 import requests
 import json
 
-# TODO: gather owners
+sys.path.insert(0, os.path.expanduser('~/var/lib/depot_tools'))
+import owners_client # part of depot_tools
+
 # TODO: gather READMEs
 # TODO: -M/-C for `git annotate`
 
@@ -135,13 +138,25 @@ class Gatherer:
     self.docs_links = WeightedSet()
     self.docs_files = WeightedSet()
 
-  def gather(self, filespec):
-    file = File(filespec)
-    self.gather_from_annotate(file)
-    for sha in self.commits:
-      self.gather_from_commit(sha)
-    for bug in self.bugs:
-      self.gather_from_bug(bug)
+  def gather(self, filespecs):
+    files = [File(filespec) for filespec in filespecs]
+    self.gather_owners(files)
+    for file in files:
+      self.gather_from_annotate(file)
+      for sha in self.commits:
+        self.gather_from_commit(sha)
+      for bug in self.bugs:
+        self.gather_from_bug(bug)
+
+  def gather_owners(self, files):
+    filenames = [f.filename for f in files]
+    c = owners_client.GetCodeOwnersClient('chromium-review.googlesource.com', 'chromium/src', 'main')
+    # assign owners weight decreasing exponentially
+    weight = 100.0
+    for owner in c.ScoreOwners(filenames):
+      self.people.add(owner, weight)
+      self.people.set(owner, 'owner', True)
+      weight *= 0.5
 
   def gather_from_annotate(self, file):
     self.log(f"Gathering git annotations for {file.filename}")
@@ -196,7 +211,7 @@ class Gatherer:
     commit['commit-headers'] = commit_headers
 
     for reviewer in commit_headers.get('Reviewed-by', []):
-      self.people.add(reviewer, 100.0) # lots of "points" for reviewing
+      self.people.add(reviewer, 80.0) # lots of "points" for reviewing
       self.people.set(reviewer, 'reviewer', True)
 
     commit['cl'] = None
@@ -268,6 +283,7 @@ class Gatherer:
       is_crbug = False
 
     if is_crbug:
+      return # XXX temporary
       self.gather_from_crbug(id)
 
   def gather_from_crbug(self, id):
@@ -301,11 +317,13 @@ class Gatherer:
         print(f"  on {commit['cl']}")
 
     header('People')
-    print("_Key:_ A = author, R = reviewer")
+    print("_Key:_ A = author, R = reviewer, O = owner")
+    print()
     for ident, person in self.people.by_weight():
       author = 'A' if person.get('author', False) else ' '
       reviewer = 'R' if person.get('reviewer', False) else ' '
-      print(f"* {author} {reviewer} - {ident}")
+      owner = 'O' if person.get('owner', False) else ' '
+      print(f"* {author} {reviewer} {owner} - {ident}")
 
     if self.bugs:
       header('Bugs')
@@ -341,8 +359,7 @@ def main():
     parser.error("Must specify at least one file")
 
   gatherer = Gatherer()
-  for filespec in args.files:
-    gatherer.gather(filespec)
+  gatherer.gather(args.files)
   gatherer.print_result()
 
 if __name__ == "__main__":
