@@ -228,6 +228,19 @@ class Gatherer:
       link = re.sub('/(edit/?)?$', '', link)
       self.docs_links.add(link)
 
+      # try to get the title
+      try:
+        body = requests.get(link + '/edit').text
+      except Exception:
+        # oh well..
+        return
+      mo = re.search('<title>([^<]*)</title>', body)
+      if mo:
+        title = mo.group(1)
+        if 'Sign-in' not in title:
+          title = re.sub(' - Google Docs$', '', title)
+          self.docs_links.set(link, 'title', title)
+
   def gather_from_bug(self, id):
     # if the bug is an integer, try loading it from crbug
     is_crbug = False
@@ -274,16 +287,18 @@ class Gatherer:
     if self.bugs:
       header('Bugs')
       for (id, bug) in self.bugs.by_weight():
-        if 'summary' in bug: # TODO link
+        if 'summary' in bug: # TODO: linkify
           print(f"* {id} - {bug['summary']}")
         else:
           print(f"* {id}")
 
     if self.docs_links:
       header('Docs Links')
-      for (link, _) in self.docs_links.by_weight():
-        # unfortunately, there's no auth-free way to determine a doc title
-        print(f"* {link}")
+      for (url, link) in self.docs_links.by_weight():
+        if 'title' in link:
+          print(f"* {url} - {link['title']}")
+        else:
+          print(f"* {url}")
 
     header("Commits")
     for (sha, commit) in self.commits.by_weight():
