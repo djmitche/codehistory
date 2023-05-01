@@ -10,12 +10,12 @@ import json
 
 # TODO: gather owners
 # TODO: gather READMEs
-# TODO: gather bugs from TODO links added/removed in diff
 # TODO: -M/-C for `git annotate`
 
 REVIEW_URL_RE = re.compile('^Review URL: (.*)$', re.M)
 BUG_EQ_RE = re.compile('^BUG=(.*)$', re.M)
 DOCS_LINK_RE = re.compile(r'https://docs.google.com/\S*', re.M)
+TODO_RE = re.compile(r'TODO\((?:(?:https?://)?crbug.com/)?([0-9]{3,})\)|TODO\([^)]*\): (?:(?:https?://)?crbug.com/)?([0-9]{3,})')
 
 class WeightedSet(dict):
   """Similar to a set, but items are added with a weight, and those weights are
@@ -134,8 +134,9 @@ class Gatherer:
     self.bugs = WeightedSet()
     self.commits = WeightedSet()
     self.docs_links = WeightedSet()
+    self.docs_files = WeightedSet()
 
-  def gather_links(self, filespec):
+  def gather(self, filespec):
     file = File(filespec)
     self.gather_from_annotate(file)
     for sha in self.commits:
@@ -177,6 +178,7 @@ class Gatherer:
 
   def gather_from_commit(self, sha):
     self.log(f"Gathering git commit information for {sha}")
+
     # Get the message body broken into "paragraphs" to separate out the
     # actual body and the headers.
     body = git('show', '-s', '--format=%B', sha)
@@ -219,13 +221,27 @@ class Gatherer:
         bug = bug.strip()
         self.bugs.add(bug)
 
+    diff = git('show', '--format=', sha).decode('utf-8')
+
+    for line in diff.splitlines():
+      if line.startswith('+'):
+        # Look for added TODO lines with a bug in them
+        mo = TODO_RE.search(line)
+        if mo:
+          for id in mo.groups():
+            if id:
+              self.bugs.add(id)
+
+        # Look for links to design docs in the code
+        self.gather_doc_links(line)
+
   def gather_doc_links(self, text):
     for link in DOCS_LINK_RE.findall(text):
       # remove fragments and queries
       link = link.split('#', 1)[0]
       link = link.split('?', 1)[0]
       # remove a trailing `/edit` or `/`
-      link = re.sub('/(edit/?)?$', '', link)
+      link = re.sub('/(edit/?)?[.,]?$', '', link)
       self.docs_links.add(link)
 
       # try to get the title
@@ -285,6 +301,12 @@ class Gatherer:
     for (reviewer, _) in self.reviewers.by_weight():
       print(f"* {reviewer}")
 
+    header("Commits")
+    for (sha, commit) in self.commits.by_weight():
+      print(f"* {sha[:9]} - {commit['summary']} ({commit['author']})")
+      if commit['cl']:
+        print(f"  on {commit['cl']}")
+
     if self.bugs:
       header('Bugs')
       for (id, bug) in self.bugs.by_weight():
@@ -300,12 +322,6 @@ class Gatherer:
           print(f"* {url} - {link['title']}")
         else:
           print(f"* {url}")
-
-    header("Commits")
-    for (sha, commit) in self.commits.by_weight():
-      print(f"* {sha[:9]} - {commit['summary']} ({commit['author']})")
-      if commit['cl']:
-        print(f"  on {commit['cl']}")
 
 
 def main():
@@ -326,7 +342,7 @@ def main():
 
   gatherer = Gatherer()
   for filespec in args.files:
-    gatherer.gather_links(filespec)
+    gatherer.gather(filespec)
   gatherer.print_result()
 
 if __name__ == "__main__":
