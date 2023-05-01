@@ -268,6 +268,7 @@ class Gatherer:
     self.bugs.set(id, 'summary', issue['summary'])
     if 'ownerRef' in issue:
       self.bugs.set(id, 'owner', issue['ownerRef']['displayName'])
+    self.bugs.set(id, 'link', 'https://crbug.com/' + id)
 
   def log(self, msg):
     print(msg, file=sys.stderr)
@@ -287,10 +288,10 @@ class Gatherer:
     if self.bugs:
       header('Bugs')
       for (id, bug) in self.bugs.by_weight():
-        if 'summary' in bug: # TODO: linkify
-          print(f"* {id} - {bug['summary']}")
-        else:
-          print(f"* {id}")
+        info = bug['link'] if 'link' in bug else id
+        if 'summary' in bug:
+          info = f"{info} - {bug['summary']}"
+        print(f"* {info}")
 
     if self.docs_links:
       header('Docs Links')
