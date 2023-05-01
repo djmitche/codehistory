@@ -129,8 +129,7 @@ class Gatherer:
   def __init__(self):
     self.crbug = Crbug()
 
-    self.authors = WeightedSet()
-    self.reviewers = WeightedSet()
+    self.people = WeightedSet()
     self.bugs = WeightedSet()
     self.commits = WeightedSet()
     self.docs_links = WeightedSet()
@@ -163,9 +162,10 @@ class Gatherer:
           commit['author'] = f"{headers['author']} {headers['author-mail']}"
           commit['author-time'] = author_time
           commit['summary'] = headers['summary']
-          self.authors.add(commit['author'], 10.0) # 10 points per unique commit
+          self.people.add(commit['author'], 10.0) # 10 points per unique commit
+          self.people.set(commit['author'], 'author', True)
         commit = self.commits[sha]
-        self.authors.add(commit['author'], 1.0) # 1 point per line
+        self.people.add(commit['author'], 1.0) # 1 point per line
         sha = None
         continue
 
@@ -196,7 +196,8 @@ class Gatherer:
     commit['commit-headers'] = commit_headers
 
     for reviewer in commit_headers.get('Reviewed-by', []):
-      self.reviewers.add(reviewer)
+      self.people.add(reviewer, 100.0) # lots of "points" for reviewing
+      self.people.set(reviewer, 'reviewer', True)
 
     commit['cl'] = None
     if 'Reviewed-on' in commit_headers:
@@ -293,19 +294,18 @@ class Gatherer:
     def header(title):
       print(f"\n## {title}\n")
 
-    header('Authors')
-    for (author, _) in self.authors.by_weight():
-      print(f"* {author}")
-
-    header('Reviewers')
-    for (reviewer, _) in self.reviewers.by_weight():
-      print(f"* {reviewer}")
-
     header("Commits")
     for (sha, commit) in self.commits.by_weight():
       print(f"* {sha[:9]} - {commit['summary']} ({commit['author']})")
       if commit['cl']:
         print(f"  on {commit['cl']}")
+
+    header('People')
+    print("_Key:_ A = author, R = reviewer")
+    for ident, person in self.people.by_weight():
+      author = 'A' if person.get('author', False) else ' '
+      reviewer = 'R' if person.get('reviewer', False) else ' '
+      print(f"* {author} {reviewer} - {ident}")
 
     if self.bugs:
       header('Bugs')
