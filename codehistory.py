@@ -12,12 +12,10 @@ import json
 sys.path.insert(0, os.path.expanduser('~/var/lib/depot_tools'))
 import owners_client # part of depot_tools
 
-# TODO: gather READMEs
-# TODO: -M/-C for `git annotate`
-
 REVIEW_URL_RE = re.compile('^Review URL: (.*)$', re.M)
 BUG_EQ_RE = re.compile('^BUG=(.*)$', re.M)
 DOCS_LINK_RE = re.compile(r'https://docs.google.com/\S*', re.M)
+MD_DIFF_RE = re.compile(r'^\+\+\+ b/(.*)\.md$', re.M)
 TODO_RE = re.compile(r'TODO\((?:(?:https?://)?crbug.com/)?([0-9]{3,})\)|TODO\([^)]*\): (?:(?:https?://)?crbug.com/)?([0-9]{3,})')
 
 class WeightedSet(dict):
@@ -61,9 +59,13 @@ def git(*args):
     result = subprocess.run(args, capture_output=True, check=True)
   except subprocess.CalledProcessError as e:
     print("Error calling git:", file=sys.stderr)
-    print(e.stderr.decode('utf-8'), file=sys.stderr)
+    print(e.stderr.decode('utf-8', errors='replace'), file=sys.stderr)
     raise e
   return result.stdout
+
+
+def codesearch_link(filename):
+    return 'https://source.chromium.org/chromium/chromium/src/+/main:' + filename
 
 
 class Crbug:
@@ -143,10 +145,11 @@ class Gatherer:
     self.gather_owners(files)
     for file in files:
       self.gather_from_annotate(file)
-      for sha in self.commits:
-        self.gather_from_commit(sha)
-      for bug in self.bugs:
-        self.gather_from_bug(bug)
+      self.gather_from_filesystem(file)
+    for sha in self.commits:
+      self.gather_from_commit(sha)
+    for bug in self.bugs:
+      self.gather_from_bug(bug)
 
   def gather_owners(self, files):
     filenames = [f.filename for f in files]
@@ -166,9 +169,9 @@ class Gatherer:
     line_range_args = []
     for range in file.line_ranges:
       line_range_args.extend(['-L', range])
-    for line in git('annotate', '-p', *line_range_args,
+    for line in git('annotate', '-p', '-M', '-C', *line_range_args,
                     '--', file.filename).splitlines():
-      line = line.decode('utf-8')
+      line = line.decode('utf-8', errors='replace')
       if line.startswith('\t'):
         if headers:
           # weight commits by author_time, so newest are first
@@ -191,13 +194,25 @@ class Gatherer:
         k, v = line.split(' ', 1)
         headers[k] = v
 
+  def gather_from_filesystem(self, file):
+    self.log(f"Gathering filesystem information for {file.filename}")
+    dir = os.path.dirname(file.filename)
+    readme = os.path.join(dir, 'README.md')
+    if os.path.exists(readme):
+      link = codesearch_link(readme)
+      self.docs_links.add(link)
+      self.docs_links.set(link, 'title', readme)
+
   def gather_from_commit(self, sha):
     self.log(f"Gathering git commit information for {sha}")
+    self.gather_from_commit_head(sha)
+    self.gather_from_commit_diff(sha)
 
+  def gather_from_commit_head(self, sha):
     # Get the message body broken into "paragraphs" to separate out the
     # actual body and the headers.
     body = git('show', '-s', '--format=%B', sha)
-    body = body.decode('utf-8').strip().split('\n\n')
+    body = body.decode('utf-8', errors='replace').strip().split('\n\n')
     (body, headers) = (body[:-1], body[-1])
     body = '\n\n'.join(body)
 
@@ -237,19 +252,32 @@ class Gatherer:
         bug = bug.strip()
         self.bugs.add(bug)
 
-    diff = git('show', '--format=', sha).decode('utf-8')
+    if commit['cl']:
+      commit['cl'] = commit['cl'].replace('https://chromium-review.googlesource.com/c/chromium/src/+', 'https://crrev.com/c')
 
+  def gather_from_commit_diff(self, sha):
+    diff = git('show', '--format=', sha).decode('utf-8', errors='replace')
+
+    # Loop over lines added in the diff (including `+++` lines containing
+    # the filename).
     for line in diff.splitlines():
-      if line.startswith('+'):
-        # Look for added TODO lines with a bug in them
-        mo = TODO_RE.search(line)
-        if mo:
-          for id in mo.groups():
-            if id:
-              self.bugs.add(id)
+      if not line.startswith('+'):
+        continue
+      # Look for TODO comments with a bug in them.
+      if mo := TODO_RE.search(line):
+        for id in mo.groups():
+          if id:
+            self.bugs.add(id)
 
-        # Look for links to design docs in the code
-        self.gather_doc_links(line)
+      # Look for links to design docs in the code.
+      self.gather_doc_links(line)
+
+      # Look for `.md` filenames as they are probably docs.
+      if mo := MD_DIFF_RE.search(line):
+        filename = mo.group(1);
+        link = codesearch_link(filename)
+        self.docs_links.add(link)
+        self.docs_links.set(link, 'title', filename)
 
   def gather_doc_links(self, text):
     for link in DOCS_LINK_RE.findall(text):
@@ -283,7 +311,6 @@ class Gatherer:
       is_crbug = False
 
     if is_crbug:
-      return # XXX temporary
       self.gather_from_crbug(id)
 
   def gather_from_crbug(self, id):
